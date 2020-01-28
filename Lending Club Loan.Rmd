@@ -254,7 +254,13 @@ xgb_mod = train(X_trn,
                 trControl = xgbControl
 )
 
-
-
+pred_trn = factor(ifelse(predict(xgb_mod, X_trn) > 0.5, "bad", "good"), levels = c("good", "bad"))
+confusionMatrix(data = pred_trn,
+                reference = loan_trn_down$target,
+                positive = "bad")
+pred_tst = factor(ifelse(predict(xgb_mod, X_tst) > 0.5, "bad", "good"), levels = c("good", "no"))
+confusionMatrix(data = pred_tst,
+                reference = loan_tst$target,
+                positive = "bad")
 
 ```
