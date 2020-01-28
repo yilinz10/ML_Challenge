@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = FALSE,
 library(tidyverse)
 library(caret)
 library(xgboost)
-library(DMwR)
+library(pROC)
 library(kableExtra)
 ```
 
@@ -278,11 +278,9 @@ xgb_mod = train(X_trn,
                 tuneGrid = xgbGrid
 )
 
-confusionMatrix(data = pred_trn,
-                reference = loan_trn_down$target,
-                positive = "bad")
+# Cross-validation result: ROC:0.9979440  Sensitivity: 0.9915315  Specificity:0.9756362
 
-# The evaluation of testing result
+# Evaluate the testing result
 
 confusionMatrix(data = predict(xgb_mod, X_tst),
                 reference = loan_tst$target,
@@ -292,4 +290,10 @@ roc(response = loan_tst$target,
     plot = TRUE,
     print.auc = TRUE)
 
+#           Reference
+#Prediction   good    bad
+#      good 389668   1963
+#      bad    3489  57012
+      
+# Sensitivity : 0.9667; Specificity : 0.9911; ROC: 0.9978
 ```
