@@ -1,0 +1,201 @@
+---
+title: "Lending Club Loan"
+author: "Yilin Zhu"
+date: "1/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r import packages}
+library(tidyverse)
+library(caret)
+library(xgboost)
+library(DMwR)
+library(kableExtra)
+```
+
+```{r load data}
+loan_data = read_csv("loan.csv", na = "")
+```
+
+```{r feature reduction and selection}
+# 1. drop features with more than 25% missing values
+na_percent = apply(loan_data, 
+                   2, 
+                   function(col) sum(is.na(col))/nrow(loan_data)
+)
+
+feature_lessNa = colnames(loan_data)[which(na_percent < 0.25)]
+loan_data = loan_data[, feature_lessNa]
+# 2. look at the unique rate of remaining non-numeric features
+uniq_percent = apply(loan_data, 
+                     2,
+                     function(col) length(unique(col))/nrow(loan_data)
+)
+
+loan_data = loan_data%>%
+  select(-c(emp_title, title, zip_code, sub_grade))
+#Note:I dropped the non-numeric features with large unique rate (i.e. emp_title, title, zipcode, addr_state). Too many different values for an non-numeric feature makes it a poor candidate for modeling as it seems borrowers are free to describe their notion of employment title. And I discarded the feature "sub_grade", since it was hard to handle it when it coexisted with the feature "grade".
+
+```
+
+```{r}
+# 3. I substituted date features with the difference in days between the issue day and last payment day, as well as the difference in days between the issue day and last credit pull day. Before that, I assumed each date in on the first day of that month. Moreover, I simply dropped feature of the earliest reported credit line date.
+convert_date = function(x){
+  as.Date(paste0("01-", x), format = "%d-%b-%Y")
+}
+convert = lapply(list(loan_data$issue_d, 
+                      loan_data$last_pymnt_d,
+                      loan_data$last_credit_pull_d), 
+                 convert_date)
+loan_data = loan_data%>%
+  mutate(issue_d = convert[[1]],
+         last_pymnt_d = convert[[2]],
+         last_credit_pull_d = convert[[3]],
+)
+loan_data = loan_data%>%
+  mutate(dateDiff_1 = as.numeric(difftime(loan_data$last_pymnt_d, loan_data$issue_d, units = 'days')),
+         dateDiff_2 = as.numeric(difftime(loan_data$last_credit_pull_d, loan_data$issue_d, units = 'days'))
+  )
+
+loan_data = loan_data%>%
+  select(-c(issue_d, last_pymnt_d, last_credit_pull_d, earliest_cr_line))
+
+# 3. it should helpful to fisrtly transform all characteristic features into categorical ones, except for two features, "emp_length", which is better to be converted to numerical one(i.e. label encoding) and "policy_code", which has only one value. Loan status, as the response variable, was converted to a binary factor based on a specific rule.
+```
+
+```{r}
+loan_data = loan_data%>%
+  mutate(term = as.factor(term),
+         grade = as.factor(grade),
+         addr_state = as.factor(addr_state),
+         home_ownership = as.factor(home_ownership),
+         verification_status = as.factor(verification_status),
+         pymnt_plan = as.factor(pymnt_plan),
+         purpose = as.factor(purpose),
+         initial_list_status = as.factor(initial_list_status),
+         application_type = as.factor(application_type),
+         hardship_flag = as.factor(hardship_flag),
+         disbursement_method = as.factor(disbursement_method),
+         debt_settlement_flag = as.factor(debt_settlement_flag)
+  )%>%
+  select(-policy_code)
+
+ 
+bad_indicators = c("Charged Off ", "Charged Off","Default",
+"Does not meet the credit policy. Status:Charged Off", "In Grace Period",
+"Default Receiver","Late (16-30 days)", "Late (31-120 days)")
+loan_data = loan_data%>%
+  mutate(target = as.factor(ifelse(loan_status %in% bad_indicators, 1, 0)))
+
+loan_data$emp_length = gsub("< 1 year", 0.5, loan_data$emp_length)
+loan_data$emp_length = gsub("1 year", 1, loan_data$emp_length)
+loan_data$emp_length = gsub("2 years", 2, loan_data$emp_length)
+loan_data$emp_length = gsub("3 years", 3, loan_data$emp_length)
+loan_data$emp_length = gsub("4 years", 4, loan_data$emp_length)
+loan_data$emp_length = gsub("5 years", 5, loan_data$emp_length)
+loan_data$emp_length = gsub("6 years", 6, loan_data$emp_length)
+loan_data$emp_length = gsub("7 years", 7, loan_data$emp_length)
+loan_data$emp_length = gsub("8 years", 8, loan_data$emp_length)
+loan_data$emp_length = gsub("9 years", 9, loan_data$emp_length)
+loan_data$emp_length = gsub("10\\+ years", 15, loan_data$emp_length)
+
+loan_data = loan_data%>%
+  mutate(emp_length = as.numeric(emp_length))
+
+
+default_rate_state = loan_data %>%
+  select(target, addr_state) %>%
+  group_by(addr_state) %>%
+  summarise(bad_rate = sum(as.numeric(target) - 1) / n())
+knitr::kable(default_rate_state)
+
+high_default = default_rate_state[which(default_rate_state[, 2] > 0.15), 1]
+high_default_state = c("AL", "AR", "IA", "LA", "MS", "OK")
+
+loan_data = loan_data%>%
+  mutate(addr_state = as.character(addr_state))%>%
+  mutate(new_state_feature = as.factor(ifelse(addr_state %in% high_default_state, 1, 0)))
+
+
+
+# 4. Imputation: handle missing values
+# The Xgboost method could handle missing values automatically, with result mostly being better than some common imputation methods, like median and knn. But imputation is kind of a prerequisite for calculating the correlation coeffients among all numerical features. 
+
+loan_data_forImp = loan_data
+imp_mod = preProcess(loan_data_forImp, 
+                        method = 'medianImpute',
+                        na.remove = FALSE)
+
+loan_data_imp = predict(imp_mod, loan_data_forImp)
+
+# 5.calculated the correlation coeffiencts among all numerical features. 
+not_num_var = c("term", "grade", "home_ownership", "verification_status", "purpose", "addr_state", "initial_list_status", "application_type", "hardship_flag", "disbursement_method", "debt_settlement_flag", "loan_status", "pymnt_plan", "target")
+loan_data_forCorr = loan_data_imp %>%
+  select(-not_num_var)
+corr_matrix = cor(loan_data_forCorr)
+highlyCorrelated = findCorrelation(corr_matrix, cutoff = 0.75, verbose = TRUE)
+highlyCorrelated_colNames = colnames(loan_data_forCorr)[highlyCorrelated]
+# Note: It might be helpful to delete more features based on the array "large_corr". Every two features with correlation coefficient larger than 0.75 were deemed to have strong relationship. The vector "highlyCorrelated" suggested features that should be deleted.
+
+# final dataset for modeling
+loan_data_imp = loan_data_imp%>%
+  select(-highlyCorrelated_colNames)%>%
+  select(-loan_status)
+set.seed(316)
+intrain = createDataPartition(1: nrow(loan_data_imp), p = 0.8, list = FALSE)
+loan_trn = loan_data_imp[intrain, ]
+loan_tst = loan_data_imp[-intrain, ]
+```
+
+```{r EDA}
+
+
+
+
+```
+
+
+
+
+```{r Xgboost modeling}
+#Xgboost requires all data input to be numerical. Therefore, for categorical features, one-hot-encoding will be applied to transform them into numerical ones. Furthermore, dataframe must be converted into a matrix before it's utilized in the model. Model.matrix() and xgb.DMatrix() are useful in the two process.
+
+#trn_label = as.numeric(loan_trn$target) - 1
+#tst_label = as.numeric(loan_tst$target) - 1
+set.seed(316)
+loan_trn_down = downSample(x = loan_trn[, -56], 
+                           y = loan_trn$target,
+                           yname = "target")
+
+new_trn = model.matrix(~.+0, data = loan_trn_down[, -56])
+new_tst = model.matrix(~.+0, data = loan_tst[, -56])
+
+X_trn = xgb.DMatrix(data = new_trn)
+X_tst = xgb.DMatrix(data = new_tst)
+
+xgbControl = trainControl(method = "cv",
+                          number = 5,  
+                          allowParallel = TRUE,
+                          verboseIter = FALSE,
+                          returnData = FALSE,
+                          classProbs = TRUE,
+                          summaryFunction = twoClassSummary
+)
+
+xgb_mod = train(X_trn, 
+                loan_trn_down$target,
+                method = "xgbTree",
+                metric = 'ROC',
+                trControl = xgbControl
+)
+
+
+
+
+```
