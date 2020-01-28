@@ -25,6 +25,7 @@ loan_data = read_csv("loan.csv", na = "")
 
 ```{r feature reduction and selection}
 # 1. drop features with more than 25% missing values
+
 na_percent = apply(loan_data, 
                    2, 
                    function(col) sum(is.na(col))/nrow(loan_data)
@@ -32,20 +33,20 @@ na_percent = apply(loan_data,
 
 feature_lessNa = colnames(loan_data)[which(na_percent < 0.25)]
 loan_data = loan_data[, feature_lessNa]
+
 # 2. look at the unique rate of remaining non-numeric features
+
 uniq_percent = apply(loan_data, 
                      2,
                      function(col) length(unique(col))/nrow(loan_data)
 )
-
 loan_data = loan_data%>%
   select(-c(emp_title, title, zip_code, sub_grade))
-#Note:I dropped the non-numeric features with large unique rate (i.e. emp_title, title, zipcode, addr_state). Too many different values for an non-numeric feature makes it a poor candidate for modeling as it seems borrowers are free to describe their notion of employment title. And I discarded the feature "sub_grade", since it was hard to handle it when it coexisted with the feature "grade".
+  
+#Note:I dropped the non-numeric features with large unique rate (i.e. emp_title, title, zipcode, addr_state). Too many different values for an non-numeric feature makes it a poor candidate for modeling. And I discarded the feature "sub_grade", since it was hard to be handled when it coexisted with the feature "grade".
 
-```
+# 3. I substituted date features with the difference in days between the issue day and last payment day, as well as the difference in days between the issue day and last credit pull day. Before that, I assumed each date was on the first day of that month. Moreover, I simply dropped the feature of the earliest reported credit line date.
 
-```{r}
-# 3. I substituted date features with the difference in days between the issue day and last payment day, as well as the difference in days between the issue day and last credit pull day. Before that, I assumed each date in on the first day of that month. Moreover, I simply dropped feature of the earliest reported credit line date.
 convert_date = function(x){
   as.Date(paste0("01-", x), format = "%d-%b-%Y")
 }
@@ -63,13 +64,8 @@ loan_data = loan_data%>%
          dateDiff_2 = as.numeric(difftime(loan_data$last_credit_pull_d, loan_data$issue_d, units = 'days'))
   )
 
-loan_data = loan_data%>%
-  select(-c(issue_d, last_pymnt_d, last_credit_pull_d, earliest_cr_line))
+# 4. it should helpful to fisrtly transform all characteristic features into categorical ones, except for two features, "emp_length", which is better to be converted to numerical one(i.e. label encoding) and "policy_code", which has only one value. Loan status, as the response variable, was converted to a binary factor based on a specific rule.
 
-# 3. it should helpful to fisrtly transform all characteristic features into categorical ones, except for two features, "emp_length", which is better to be converted to numerical one(i.e. label encoding) and "policy_code", which has only one value. Loan status, as the response variable, was converted to a binary factor based on a specific rule.
-```
-
-```{r}
 loan_data = loan_data%>%
   mutate(term = as.factor(term),
          grade = as.factor(grade),
@@ -86,13 +82,6 @@ loan_data = loan_data%>%
   )%>%
   select(-policy_code)
 
- 
-bad_indicators = c("Charged Off ", "Charged Off","Default",
-"Does not meet the credit policy. Status:Charged Off", "In Grace Period",
-"Default Receiver","Late (16-30 days)", "Late (31-120 days)")
-loan_data = loan_data%>%
-  mutate(target = as.factor(ifelse(loan_status %in% bad_indicators, 1, 0)))
-
 loan_data$emp_length = gsub("< 1 year", 0.5, loan_data$emp_length)
 loan_data$emp_length = gsub("1 year", 1, loan_data$emp_length)
 loan_data$emp_length = gsub("2 years", 2, loan_data$emp_length)
@@ -104,10 +93,19 @@ loan_data$emp_length = gsub("7 years", 7, loan_data$emp_length)
 loan_data$emp_length = gsub("8 years", 8, loan_data$emp_length)
 loan_data$emp_length = gsub("9 years", 9, loan_data$emp_length)
 loan_data$emp_length = gsub("10\\+ years", 15, loan_data$emp_length)
-
 loan_data = loan_data%>%
   mutate(emp_length = as.numeric(emp_length))
 
+# 5. Create target variable
+ 
+bad_indicators = c("Charged Off ", "Charged Off","Default",
+"Does not meet the credit policy. Status:Charged Off", "In Grace Period",
+"Default Receiver","Late (16-30 days)", "Late (31-120 days)")
+loan_data = loan_data%>%
+  mutate(target = as.factor(ifelse(loan_status %in% bad_indicators, 1, 0)))
+levels(loan_data$target) = c("good", "bad")
+
+#6. The feature "Addr_state" deserves more attention. The dimension of it is a little bit high. So I created a new binary categorical variable based on it.
 
 default_rate_state = loan_data %>%
   select(target, addr_state) %>%
@@ -124,8 +122,8 @@ loan_data = loan_data%>%
 
 
 
-# 4. Imputation: handle missing values
-# The Xgboost method could handle missing values automatically, with result mostly being better than some common imputation methods, like median and knn. But imputation is kind of a prerequisite for calculating the correlation coeffients among all numerical features. 
+# 7. Imputation: handle missing values
+# imputation is kind of a prerequisite for calculating the correlation coeffients among all numerical features. 
 
 loan_data_forImp = loan_data
 imp_mod = preProcess(loan_data_forImp, 
@@ -134,64 +132,125 @@ imp_mod = preProcess(loan_data_forImp,
 
 loan_data_imp = predict(imp_mod, loan_data_forImp)
 
-# 5.calculated the correlation coeffiencts among all numerical features. 
-not_num_var = c("term", "grade", "home_ownership", "verification_status", "purpose", "addr_state", "initial_list_status", "application_type", "hardship_flag", "disbursement_method", "debt_settlement_flag", "loan_status", "pymnt_plan", "target")
+# 8.calculated the correlation coeffiencts among all numerical features. 
+
+not_num_var = c("term", "grade", "home_ownership", "verification_status", "purpose", "addr_state", "initial_list_status", "application_type", "hardship_flag", "disbursement_method", "debt_settlement_flag", "loan_status", "pymnt_plan", "target",
+"new_state_feature")
 loan_data_forCorr = loan_data_imp %>%
   select(-not_num_var)
 corr_matrix = cor(loan_data_forCorr)
 highlyCorrelated = findCorrelation(corr_matrix, cutoff = 0.75, verbose = TRUE)
 highlyCorrelated_colNames = colnames(loan_data_forCorr)[highlyCorrelated]
-# Note: It might be helpful to delete more features based on the array "large_corr". Every two features with correlation coefficient larger than 0.75 were deemed to have strong relationship. The vector "highlyCorrelated" suggested features that should be deleted.
 
-# final dataset for modeling
-loan_data_imp = loan_data_imp%>%
+# Note: It might be helpful to delete more features based on the array "large_corr". Each pair of features with correlation coefficient larger than 0.75 was deemed to have strong relationship. The vector "highlyCorrelated" suggested features that should be deleted.
+
+# 9.final dataset for modeling
+
+loan_data_mod = loan_data_imp%>%
   select(-highlyCorrelated_colNames)%>%
-  select(-loan_status)
+  select(-c(loan_status, issue_d, last_pymnt_d, last_credit_pull_d, earliest_cr_line, addr_state))
 set.seed(316)
-intrain = createDataPartition(1: nrow(loan_data_imp), p = 0.8, list = FALSE)
-loan_trn = loan_data_imp[intrain, ]
-loan_tst = loan_data_imp[-intrain, ]
+intrain = createDataPartition(1: nrow(loan_data_mod), p = 0.8, list = FALSE)
+loan_trn = loan_data_mod[intrain, ]
+loan_tst = loan_data_mod[-intrain, ]
 ```
+
 
 ```{r EDA}
+# 1. The histogram of loan amount and annual income, under different levels of the target variable(i.e. good or bad)
 
+loan_data %>%  
+  ggplot(aes(x = loan_amount, y = ..density..)) +
+  geom_histogram(binwidth = 30) +
+  geom_density(alpha = .2, fill = "#FF6666")
+  facet_wrap(~ target) +
+  labs(x = "Loan Amount", y = "Count", title = "Distribution of Loan Amount") 
 
+# 2. Annual income V.S. loan amount
 
+loan_data[sample(nrow(loan_data) , 100000) , ] %>%
+  ggplot(aes(x = annual_inc , y = loan_amnt)) +
+  geom_point(alpha = 0.5 , size = 1.5) + 
+  geom_smooth(se = F , color = 'red' , method = 'loess') +
+  xlim(c(0 , 300000)) + 
+  labs(x = 'Annual Income' , y = 'Loan Ammount')
 
+# 3. The barplot for the number of bad and good loans, under different loan grades.
+
+loan_data%>%
+  ggplot(aes(x = grade , y = ..count.. , fill = target)) +
+  geom_bar(position="stack") + 
+  theme(legend.title = element_blank())
+
+# 4. The barplot for the number of different loan status.
+
+loan_data %>%
+        count(loan_status) %>%
+        ggplot(aes(x = reorder(loan_status , desc(n)) , y = n , fill = n)) + 
+        geom_col() + 
+        coord_flip() + 
+        labs(x = 'Loan status type' , y = 'Count')
+
+# 5. The boxplot for loan amount under different loan grades.
+
+loan_data %>%
+  ggplot(aes(grade, loan_amnt)) +
+  geom_boxplot() +
+  give_mean +
+  scale_y_continuous() +
+  facet_wrap(~ target) +
+  labs(title="Loan Amount by Different Grades", x = "Grade", y = "Loan Amount \n")
+
+# 6. The boxplot for interest rates, under different loan grades.
+
+loan_data %>%
+  ggplot(aes(x = grade , y = int_rate , fill = grade)) + 
+  geom_boxplot() + 
+  theme_igray() + 
+  labs(y = 'Interest Rate' , x = 'Grade')
+
+# 7. The trend of the loan amount, along with the issued day.
+
+loan_data %>%
+  select(loan_amnt, grade, issue_d) %>%
+  group_by(grade, issue_d) %>%
+  summarise(amnt_mean = mean(loan_amnt, na.rm = TRUE)) %>%
+  ggplot(aes(issue_d, amnt_mean)) +
+  geom_line(color= "red", size = 1) +
+  facet_wrap(~ grade)
+
+# The plot above shows that the loan amount from borrowers with lower grades fluctuated frequently during the time period, while increased steadily from borrowers with higher grades.
 ```
-
-
-
 
 ```{r Xgboost modeling}
 #Xgboost requires all data input to be numerical. Therefore, for categorical features, one-hot-encoding will be applied to transform them into numerical ones. Furthermore, dataframe must be converted into a matrix before it's utilized in the model. Model.matrix() and xgb.DMatrix() are useful in the two process.
 
-#trn_label = as.numeric(loan_trn$target) - 1
-#tst_label = as.numeric(loan_tst$target) - 1
+# Understood this is a imbalanced classification dataset. Here I downsampled the traning dataset because of the computation and time limit.
+
 set.seed(316)
 loan_trn_down = downSample(x = loan_trn[, -56], 
                            y = loan_trn$target,
                            yname = "target")
 
+trn_label = as.numeric(loan_trn_down$target) - 1
+tst_label = as.numeric(loan_tst$target) - 1
+
 new_trn = model.matrix(~.+0, data = loan_trn_down[, -56])
 new_tst = model.matrix(~.+0, data = loan_tst[, -56])
-
-X_trn = xgb.DMatrix(data = new_trn)
-X_tst = xgb.DMatrix(data = new_tst)
+X_trn = xgb.DMatrix(data = new_trn, label = trn_label)
+X_tst = xgb.DMatrix(data = new_tst, label = tst_label)
 
 xgbControl = trainControl(method = "cv",
                           number = 5,  
                           allowParallel = TRUE,
                           verboseIter = FALSE,
-                          returnData = FALSE,
-                          classProbs = TRUE,
-                          summaryFunction = twoClassSummary
+                          returnData = FALSE
 )
 
 xgb_mod = train(X_trn, 
-                loan_trn_down$target,
+                trn_label,
                 method = "xgbTree",
-                metric = 'ROC',
+                metric = 'RMSE',
                 trControl = xgbControl
 )
 
