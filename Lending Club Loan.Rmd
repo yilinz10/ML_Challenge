@@ -241,12 +241,12 @@ Start Xgboost modeling
 # Understood this is a imbalanced classification dataset. Here I downsampled the traning dataset because of the computation and time limit.
 
 set.seed(316)
-loan_trn_down = downSample(x = loan_trn[, -55], 
+loan_trn_down = downSample(x = loan_trn%>% select(-target), 
                            y = loan_trn$target,
                            yname = "target")
 
-new_trn = model.matrix(~.+0, data = loan_trn_down[, -55])
-new_tst = model.matrix(~.+0, data = loan_tst[, -55])
+new_trn = model.matrix(~.+0, data = loan_trn_down %>% select(-target))
+new_tst = model.matrix(~.+0, data = loan_tst %>% select(-target))
 X_trn = xgb.DMatrix(data = new_trn)
 X_tst = xgb.DMatrix(data = new_tst)
 
@@ -268,6 +268,8 @@ xgbGrid = expand.grid(nrounds = 50,
                       subsample = 1
 )
 
+# Here I did not thoroughly tune the parameters.
+
 xgb_mod = train(X_trn, 
                 loan_trn_down$target,
                 method = "xgbTree",
@@ -276,12 +278,18 @@ xgb_mod = train(X_trn,
                 tuneGrid = xgbGrid
 )
 
-confusionMatrix(data = predict(xgb_mod, X_trn)
+confusionMatrix(data = pred_trn,
                 reference = loan_trn_down$target,
                 positive = "bad")
+
+# The evaluation of testing result
 
 confusionMatrix(data = predict(xgb_mod, X_tst),
                 reference = loan_tst$target,
                 positive = "bad")
+roc(response = loan_tst$target,
+    predictor = predict(xgb_mod, X_tst, type = "prob")[, 2],
+    plot = TRUE,
+    print.auc = TRUE)
 
 ```
