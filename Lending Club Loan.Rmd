@@ -23,6 +23,10 @@ library(kableExtra)
 loan_data = read_csv("loan.csv", na = "")
 ```
 
+
+Start feature reduction and selection
+
+
 ```{r feature reduction and selection}
 # 1. drop features with more than 25% missing values
 
@@ -155,20 +159,22 @@ loan_trn = loan_data_mod[intrain, ]
 loan_tst = loan_data_mod[-intrain, ]
 ```
 
+Start EDA
+
 
 ```{r EDA}
 # 1. The histogram of loan amount and annual income, under different levels of the target variable(i.e. good or bad)
 
 loan_data %>%  
-  ggplot(aes(x = loan_amount, y = ..density..)) +
-  geom_histogram(binwidth = 30) +
-  geom_density(alpha = .2, fill = "#FF6666")
-  facet_wrap(~ target) +
-  labs(x = "Loan Amount", y = "Count", title = "Distribution of Loan Amount") 
+  ggplot(aes(x = loan_amnt, fill = target)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Loan Amount", y = "Density", title = "Distribution of Loan Amount") 
+
+#This distribution was mostly the same.
 
 # 2. Annual income V.S. loan amount
 
-loan_data[sample(nrow(loan_data) , 100000) , ] %>%
+loan_data[sample(nrow(loan_data) , 30000) , ] %>%
   ggplot(aes(x = annual_inc , y = loan_amnt)) +
   geom_point(alpha = 0.5 , size = 1.5) + 
   geom_smooth(se = F , color = 'red' , method = 'loess') +
@@ -182,6 +188,8 @@ loan_data%>%
   geom_bar(position="stack") + 
   theme(legend.title = element_blank())
 
+# As I expected, the lower the grade, the larger the percentage of bad loans.
+
 # 4. The barplot for the number of different loan status.
 
 loan_data %>%
@@ -191,12 +199,13 @@ loan_data %>%
         coord_flip() + 
         labs(x = 'Loan status type' , y = 'Count')
 
+# Extremely imbalanced
+
 # 5. The boxplot for loan amount under different loan grades.
 
 loan_data %>%
   ggplot(aes(grade, loan_amnt)) +
   geom_boxplot() +
-  give_mean +
   scale_y_continuous() +
   facet_wrap(~ target) +
   labs(title="Loan Amount by Different Grades", x = "Grade", y = "Loan Amount \n")
@@ -206,8 +215,9 @@ loan_data %>%
 loan_data %>%
   ggplot(aes(x = grade , y = int_rate , fill = grade)) + 
   geom_boxplot() + 
-  theme_igray() + 
   labs(y = 'Interest Rate' , x = 'Grade')
+
+# As I expected, the lower the grade, the larger the interest rate.
 
 # 7. The trend of the loan amount, along with the issued day.
 
@@ -222,44 +232,55 @@ loan_data %>%
 # The plot above shows that the loan amount from borrowers with lower grades fluctuated frequently during the time period, while increased steadily from borrowers with higher grades.
 ```
 
+Start Xgboost modeling
+
+
 ```{r Xgboost modeling}
 #Xgboost requires all data input to be numerical. Therefore, for categorical features, one-hot-encoding will be applied to transform them into numerical ones. Furthermore, dataframe must be converted into a matrix before it's utilized in the model. Model.matrix() and xgb.DMatrix() are useful in the two process.
 
 # Understood this is a imbalanced classification dataset. Here I downsampled the traning dataset because of the computation and time limit.
 
 set.seed(316)
-loan_trn_down = downSample(x = loan_trn[, -56], 
+loan_trn_down = downSample(x = loan_trn[, -55], 
                            y = loan_trn$target,
                            yname = "target")
 
-trn_label = as.numeric(loan_trn_down$target) - 1
-tst_label = as.numeric(loan_tst$target) - 1
-
-new_trn = model.matrix(~.+0, data = loan_trn_down[, -56])
-new_tst = model.matrix(~.+0, data = loan_tst[, -56])
-X_trn = xgb.DMatrix(data = new_trn, label = trn_label)
-X_tst = xgb.DMatrix(data = new_tst, label = tst_label)
+new_trn = model.matrix(~.+0, data = loan_trn_down[, -55])
+new_tst = model.matrix(~.+0, data = loan_tst[, -55])
+X_trn = xgb.DMatrix(data = new_trn)
+X_tst = xgb.DMatrix(data = new_tst)
 
 xgbControl = trainControl(method = "cv",
                           number = 5,  
                           allowParallel = TRUE,
                           verboseIter = FALSE,
-                          returnData = FALSE
+                          returnData = FALSE,
+                          classProbs = TRUE,
+                          summaryFunction = twoClassSummary
+)
+
+xgbGrid = expand.grid(nrounds = 50,  
+                      max_depth = c(10, 15, 20),
+                      colsample_bytree = seq(0.6, 0.9, length.out = 4),
+                      eta = 0.1,
+                      gamma=0,
+                      min_child_weight = 1,
+                      subsample = 1
 )
 
 xgb_mod = train(X_trn, 
-                trn_label,
+                loan_trn_down$target,
                 method = "xgbTree",
-                metric = 'RMSE',
-                trControl = xgbControl
+                metric = 'ROC',
+                trControl = xgbControl,
+                tuneGrid = xgbGrid
 )
 
-pred_trn = factor(ifelse(predict(xgb_mod, X_trn) > 0.5, "bad", "good"), levels = c("good", "bad"))
-confusionMatrix(data = pred_trn,
+confusionMatrix(data = predict(xgb_mod, X_trn)
                 reference = loan_trn_down$target,
                 positive = "bad")
-pred_tst = factor(ifelse(predict(xgb_mod, X_tst) > 0.5, "bad", "good"), levels = c("good", "no"))
-confusionMatrix(data = pred_tst,
+
+confusionMatrix(data = predict(xgb_mod, X_tst),
                 reference = loan_tst$target,
                 positive = "bad")
 
